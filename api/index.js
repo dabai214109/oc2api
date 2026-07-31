@@ -49,7 +49,7 @@ async function handleRequest(request) {
 	const path = url.pathname.replace(/\/+$/, "") || "/";
 
 	try {
-		if (request.method === "GET" && (path === "/" || path === "/health")) return healthResponse();
+		if (request.method === "GET" && (path === "/" || path === "/health")) return healthResponse(request);
 
 		if (request.method === "GET" && path === "/ip") return ipResponse();
 		// require auth for all other endpoints
@@ -189,7 +189,69 @@ async function ipResponse() {
 	}
 }
 
-function healthResponse() {
+function healthResponse(request) {
+	const accept = request?.headers?.get?.("accept") || "";
+	const prefersHtml = accept.includes("text/html");
+
+	// Serve HTML page with Speed Insights for browser requests
+	if (prefersHtml) {
+		const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>OC2API - OpenCode API Proxy</title>
+	<style>
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+			max-width: 800px;
+			margin: 50px auto;
+			padding: 20px;
+			line-height: 1.6;
+			color: #333;
+		}
+		h1 { color: #0070f3; }
+		.status { color: #00c851; font-weight: bold; }
+		.endpoint { 
+			background: #f4f4f4; 
+			padding: 8px 12px; 
+			margin: 5px 0; 
+			border-radius: 4px;
+			font-family: monospace;
+		}
+		ul { list-style: none; padding: 0; }
+		.info { background: #e7f3ff; padding: 15px; border-radius: 4px; margin: 20px 0; }
+	</style>
+	<script>
+		window.si = window.si || function () { (window.siq = window.siq || []).push(arguments); };
+	</script>
+	<script defer src="/_vercel/speed-insights/script.js"></script>
+</head>
+<body>
+	<h1>OC2API</h1>
+	<div class="info">
+		<p><strong>Status:</strong> <span class="status">OK</span></p>
+		<p><strong>Version:</strong> ${PROXY_VERSION}</p>
+	</div>
+	<h2>Available Endpoints</h2>
+	<ul>
+		<li class="endpoint">POST /v1/chat/completions</li>
+		<li class="endpoint">POST /chat/completions</li>
+		<li class="endpoint">GET /v1/models</li>
+		<li class="endpoint">GET /models</li>
+		<li class="endpoint">GET /ip</li>
+		<li class="endpoint">GET /health</li>
+	</ul>
+	<p>OpenCode API Proxy deployed on Vercel with SSE streaming support.</p>
+</body>
+</html>`;
+		return new Response(html, {
+			status: 200,
+			headers: mergeHeaders({ "Content-Type": "text/html; charset=utf-8" }),
+		});
+	}
+
+	// Serve JSON for API clients
 	return jsonResponse({
 		status: "ok",
 		version: PROXY_VERSION,
