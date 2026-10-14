@@ -1,6 +1,27 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+test("default upstream uses V2 inference for both models and chat", async (t) => {
+  const previousBase = process.env.ZEN_API_BASE_URL
+  delete process.env.ZEN_API_BASE_URL
+  t.after(() => {
+    if (previousBase !== undefined) process.env.ZEN_API_BASE_URL = previousBase
+  })
+  const calls = []
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls.push([url, options])
+    return new Response(JSON.stringify({ data: [{ id: "big-pickle" }] }))
+  })
+  const zen = await import("../../server/zen.js?v2-default-test")
+  await zen.listModels()
+  const request = zen.buildUpstreamRequest({ model: "big-pickle", messages: [] }, "ses_test")
+  await zen.fetchUpstream(request, { requestId: "test", model: "big-pickle" })
+  assert.equal(calls[0][0], "https://opencode.ai/inference/v1/models")
+  assert.equal(calls[1][0], "https://opencode.ai/inference/v1/chat/completions")
+  assert.equal(calls[0][1].headers["User-Agent"], "opencode/latest/2.0.29/cli")
+  assert.equal(calls[1][1].headers["x-opencode-request"], undefined)
+})
+
 test("custom upstream routes models and unchanged chat requests through a relay", async (t) => {
   const previousBase = process.env.ZEN_API_BASE_URL
   const previousTimeout = process.env.ZEN_CONNECT_TIMEOUT_MS

@@ -70,6 +70,39 @@ async function runBoth(chunks, options = {}) {
   return results
 }
 
+test("禁用工具时两种模式都拒绝 tool_calls、legacy function_call 和工具结束信号", async () => {
+  for (const choice of [
+    { delta: { tool_calls: [{ index: 0, function: { name: "shell", arguments: "{}" } }] } },
+    { delta: { tool_calls: [{ index: 0, function: { arguments: "{" } }] } },
+    { delta: { function_call: { name: "read", arguments: "{}" } } },
+    { delta: {}, finish_reason: "tool_calls" },
+    { delta: {}, finish_reason: "function_call" },
+  ]) {
+    for (const response of await runBoth(
+      [`data: ${JSON.stringify({ choices: [{ index: 0, ...choice }] })}\n\n`, done],
+      {
+        ctx: { toolsDisabled: true },
+      },
+    )) {
+      assert.equal(response.statusCode, 429)
+      assert.match(response.body.error.message, /tools are disabled/)
+      assert.ok(!response.text.includes("[DONE]"))
+    }
+  }
+})
+
+test("禁用工具时正文后的意外调用以 SSE 错误结束，不发送工具增量或 DONE", async () => {
+  const toolFrame =
+    'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"shell","arguments":"{}"}}]}}]}\n\n'
+  const [full, stream] = await runBoth([partial, toolFrame, done], { ctx: { toolsDisabled: true } })
+  assert.equal(full.statusCode, 429)
+  assert.match(full.body.error.message, /tools are disabled/)
+  assert.equal(stream.statusCode, 200)
+  assert.match(stream.text, /tools are disabled/)
+  assert.ok(!stream.text.includes('"tool_calls"'))
+  assert.ok(!stream.text.includes("[DONE]"))
+})
+
 function payloads(text) {
   return text
     .split("\n")

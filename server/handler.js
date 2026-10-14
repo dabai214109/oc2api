@@ -2,7 +2,14 @@
 import { config } from "./config.js"
 import { ocId, sendJson, upstreamErrorResponse } from "./shared.js"
 import { debugLog, logZenRequest } from "./log.js"
-import { buildUpstreamRequest, fetchUpstream, getSession, isAllowedModelId, listModels } from "./zen.js"
+import {
+  areToolsDisabled,
+  buildUpstreamRequest,
+  fetchUpstream,
+  getSession,
+  isAllowedModelId,
+  listModels,
+} from "./zen.js"
 import { respondJson, respondStream } from "./openai.js"
 
 export function health(_request, response) {
@@ -113,7 +120,14 @@ export async function chat(request, response) {
     return upstreamErrorResponse(response, error)
   }
 
-  const ctx = { requestId, model: input.model, thinkingEnabled, status: upstream.status, choiceCount: input.n }
+  const ctx = {
+    requestId,
+    model: input.model,
+    thinkingEnabled,
+    status: upstream.status,
+    choiceCount: input.n,
+    toolsDisabled: areToolsDisabled(input),
+  }
   if (stream) return respondStream(response, upstream, ctx)
   return respondJson(response, upstream, ctx)
 }

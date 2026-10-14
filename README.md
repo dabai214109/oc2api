@@ -63,7 +63,7 @@ API_KEY=your-key DEBUG=true PORT=8080 npm start
 ZEN_API_BASE_URL=http://127.0.0.1:2082/v1 ZEN_CONNECT_TIMEOUT_MS=300000 npm start
 ```
 
-`ZEN_API_BASE_URL` 默认是 `https://opencode.ai/zen/v1`，同时用于模型列表和聊天。
+`ZEN_API_BASE_URL` 默认是 `https://opencode.ai/inference/v1`（OpenCode V2 上游），同时用于模型列表和聊天。
 `ZEN_CONNECT_TIMEOUT_MS` 默认是 60000 毫秒，允许 1–600000；中继重试时应设置为大于其恢复窗口。
 它只控制收到响应头之前的等待时间，后续流式读取仍使用已有的超时机制。
 
@@ -89,7 +89,7 @@ docker compose up -d --build
 npm test
 ```
 
-真实联调包含 9 个用例：非流式回答、流式多轮对话、禁用工具、实际工具调用、工具结果回填，以及三个并行工具调用。全部首轮成功时至少发送 10 次 `big-pickle` 请求，工具自主选择的有限重试会增加请求数。Vercel 用例通过本地 HTTP 服务加载其入口，不等于远程 Vercel 部署验收：
+真实联调包含 10 个用例：非流式回答、流式多轮对话、禁用工具、实际工具调用、工具结果回填，以及三个并行工具调用。全部首轮成功时至少发送 11 次 `big-pickle` 请求，工具自主选择的有限重试会增加请求数。Vercel 用例通过本地 HTTP 服务加载其入口，不等于远程 Vercel 部署验收：
 
 ```bash
 npm run test:live
@@ -125,6 +125,12 @@ Authorization: Bearer <api-key>
 ```
 
 也支持 `X-API-Key`。
+
+### OpenCode V2 兼容
+
+上游请求使用 V2 的 User-Agent 与会话关联 headers，不发送旧版非标准的 `x-opencode-request`。免费层要求 `shell` / `read` 工具的官方描述前缀与参数 schema，代理仅补充缺失的保留工具，不注入 OpenCode 系统提示词或修改用户消息。用户自带同名工具会保留原定义，也须满足上游校验。
+
+V2 免费层拒绝显式 `tool_choice: "none"`。下游未提供工具或显式禁用工具时，代理不向上游提供用户工具，也不透传 `none`；保留工具带有禁止调用提示。响应层强制拒绝任何意外工具调用：响应头发送前返回 `429`，流式输出开始后发送 SSE 错误且不补 `[DONE]`，不会把工具调用伪装为正常回答。其余工具选择照常透传。
 
 ## 免费模型限制
 

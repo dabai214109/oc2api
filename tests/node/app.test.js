@@ -117,10 +117,10 @@ test("合法请求端到端：流式与非流式都能拿到正文与 usage", as
   assert.match(nonStream.headers["x-request-id"] ?? "", /^req_/)
   assert.equal(forwarded.at(-1).stream, true, "上游只接受流式")
 
-  // 用户没传 tools：必须补齐免费层门禁工具并禁止选中它们
+  // 用户没传 tools：补齐 V2 门禁工具，不能发送上游拒绝的 none。
   const names = forwarded.at(-1).tools.map((tool) => tool.function.name)
-  assert.ok(names.includes("bash") && names.includes("read"))
-  assert.equal(forwarded.at(-1).tool_choice, "none")
+  assert.deepEqual(names, ["shell", "read"])
+  assert.equal(forwarded.at(-1).tool_choice, undefined)
 
   const stream = await post(server.url, { ...base, stream: true })
   assert.equal(stream.status, 200)
@@ -363,6 +363,34 @@ test("HTTP 两种模式都能完成两个工具调用、结果回填及下一轮
     assert.match(result.text, /hi/)
   }
   assert.equal(roundTrips, 2)
+})
+
+test("HTTP 禁用工具：不透传用户定义或 none，并拒绝上游意外工具调用", async (t) => {
+  const weather = { type: "function", function: { name: "weather", parameters: { type: "object" } } }
+  let raw = sse
+  const server = await fixture(t, async (_url, init) => {
+    const body = JSON.parse(init.body)
+    assert.equal(body.tool_choice, undefined)
+    assert.deepEqual(
+      body.tools.map((tool) => tool.function.name),
+      ["shell", "read"],
+    )
+    return new Response(raw)
+  })
+  for (const stream of [false, true]) {
+    const input = { ...base, stream, tools: [weather], tool_choice: "none" }
+    assert.equal((await post(server.url, input)).status, 200)
+    raw =
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"shell","arguments":"{}"}}]}}]}\n\n' +
+      "data: [DONE]\n\n"
+    for (const payload of [input, { ...base, stream }]) {
+      const response = await post(server.url, payload)
+      assert.equal(response.status, 429)
+      assert.match(JSON.parse(response.text).error.message, /tools are disabled/)
+      assert.ok(!response.text.includes("[DONE]"))
+    }
+    raw = sse
+  }
 })
 
 async function fixture(t, fetchImpl) {

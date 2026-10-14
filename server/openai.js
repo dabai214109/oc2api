@@ -225,6 +225,17 @@ export async function* readEvents(reader, ctx) {
     if (trailing) return parsed.usage ? { ...parsed, choices: [] } : undefined
     for (const choice of Array.isArray(parsed.choices) ? parsed.choices : []) {
       if (!isPlainObject(choice)) continue
+      // 上游不再接受 tool_choice:none。禁用语义在共同解析入口强制执行，
+      // 在流式写入或非流式聚合之前拒绝调用，不伪造空回答或正常完成。
+      if (
+        ctx.toolsDisabled &&
+        (choice.delta?.tool_calls?.length > 0 ||
+          choice.delta?.function_call != null ||
+          choice.finish_reason === "tool_calls" ||
+          choice.finish_reason === "function_call")
+      ) {
+        throw new ZenStreamError("Upstream returned a tool call when tools are disabled")
+      }
       const index = Number.isInteger(choice.index) ? choice.index : 0
       choiceIndexes.add(index)
       if (typeof choice.finish_reason === "string" && choice.finish_reason) finishedIndexes.add(index)
