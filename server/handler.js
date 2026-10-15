@@ -127,6 +127,9 @@ export async function chat(request, response) {
     status: upstream.status,
     choiceCount: input.n,
     toolsDisabled: areToolsDisabled(input),
+    toolAliases: upstreamRequest.toolAliases,
+    reservedToolNames: upstreamRequest.reservedToolNames,
+    clientToolNames: upstreamRequest.clientToolNames,
   }
   if (stream) return respondStream(response, upstream, ctx)
   return respondJson(response, upstream, ctx)

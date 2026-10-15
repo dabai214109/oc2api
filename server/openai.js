@@ -162,6 +162,82 @@ function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
+// 名字别名只在上游存在。跨帧名字先等到能确定映射再发出，参数增量不缓冲；
+// 两种响应模式共用此入口，避免别名泄漏或把保留工具当成客户端工具执行。
+function restoreFunctionName(fn, target, ctx) {
+  const fragment = fn?.name
+  const hasName = typeof fragment === "string" && fragment.length > 0
+  if (!hasName && !target.pendingName) return fn
+  if (hasName && target.upstreamName !== fragment) target.upstreamName = (target.upstreamName || "") + fragment
+  const name = target.upstreamName
+  const candidates = [
+    ...(ctx.toolAliases?.keys() || []),
+    ...(ctx.clientToolNames || []),
+    ...(ctx.reservedToolNames || []),
+  ]
+  const next = { ...fn }
+  // 一个完整工具名也可能是另一个名字的前缀。参数开始前暂缓判断，
+  // 例如 oc2api_read 与为冲突工具生成的 oc2api_read_1。
+  const longerName = candidates.some((candidate) => candidate !== name && candidate.startsWith(name))
+  if (longerName && !fn.arguments) {
+    delete next.name
+    target.pendingName = true
+    return next
+  }
+  if (ctx.reservedToolNames?.includes(name)) throw new ZenStreamError(`Upstream called reserved tool: ${name}`)
+  const restored = ctx.toolAliases?.get(name)
+  if (restored) {
+    if (target.nameRestored) delete next.name
+    else next.name = restored
+    target.nameRestored = true
+    target.pendingName = false
+    return next
+  }
+  if (!ctx.clientToolNames?.includes(name) && candidates.some((candidate) => candidate.startsWith(name))) {
+    delete next.name
+    target.pendingName = true
+    return next
+  }
+  if (target.pendingName) next.name = name
+  target.pendingName = false
+  return next
+}
+
+function assertToolNamesComplete(state) {
+  if ([...state.calls.values(), state.legacyTool].some((call) => call?.pendingName)) {
+    throw new ZenStreamError("Incomplete upstream tool name")
+  }
+}
+
+function restoreChoiceToolNames(choice, index, ctx, states) {
+  if (!ctx.toolAliases?.size && !ctx.reservedToolNames?.length) return
+  const delta = choice.delta
+  if (isPlainObject(delta)) {
+    if (Array.isArray(delta.tool_calls) || isPlainObject(delta.function_call)) {
+      if (!states.has(index)) states.set(index, newCallState())
+      const state = states.get(index)
+      if (Array.isArray(delta.tool_calls)) {
+        delta.tool_calls = delta.tool_calls.map((call) => {
+          if (!isPlainObject(call)) return call
+          const target = toolCallTarget(state, call)
+          if (typeof call.id === "string" && call.id) {
+            target.id = call.id
+            state.callsById.set(call.id, target)
+          }
+          return isPlainObject(call.function)
+            ? { ...call, function: restoreFunctionName(call.function, target, ctx) }
+            : call
+        })
+      }
+      if (isPlainObject(delta.function_call)) {
+        state.legacyTool ??= {}
+        delta.function_call = restoreFunctionName(delta.function_call, state.legacyTool, ctx)
+      }
+    }
+  }
+  if (choice.finish_reason && states.has(index)) assertToolNamesComplete(states.get(index))
+}
+
 export async function* readEvents(reader, ctx) {
   const decoder = new TextDecoder()
   let buffer = ""
@@ -171,6 +247,7 @@ export async function* readEvents(reader, ctx) {
   let formatDecided = false
   const choiceIndexes = new Set()
   const finishedIndexes = new Set()
+  const toolNamesByChoice = new Map()
   const expectedChoices = Number.isInteger(ctx.choiceCount) && ctx.choiceCount > 0 ? ctx.choiceCount : 1
   // 所有 choice 完成之后才开始尾段，不能让一个 choice 先结束就截断其余 choice。
   let trailingUntil = 0
@@ -207,6 +284,7 @@ export async function* readEvents(reader, ctx) {
     // [DONE] 和它后面的帧，用循环开始时的快照会漏判。
     const trailing = trailingUntil > 0
     if (event.payload === "[DONE]") {
+      if (!trailing) for (const state of toolNamesByChoice.values()) assertToolNamesComplete(state)
       beginTrailer(true)
       return null
     }
@@ -237,6 +315,8 @@ export async function* readEvents(reader, ctx) {
         throw new ZenStreamError("Upstream returned a tool call when tools are disabled")
       }
       const index = Number.isInteger(choice.index) ? choice.index : 0
+      // 已完成 choice 的迟到调用与其它越界帧一样忽略，不重新触发映射/拒绝。
+      if (!finishedIndexes.has(index)) restoreChoiceToolNames(choice, index, ctx, toolNamesByChoice)
       choiceIndexes.add(index)
       if (typeof choice.finish_reason === "string" && choice.finish_reason) finishedIndexes.add(index)
     }

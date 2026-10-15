@@ -103,6 +103,175 @@ test("禁用工具时正文后的意外调用以 SSE 错误结束，不发送工
   assert.ok(!stream.text.includes("[DONE]"))
 })
 
+test("上游工具别名跨帧恢复原名，流式/非流式保留原参数、ID 与并行 index", async () => {
+  const frames = [
+    {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              { index: 0, id: "A", type: "function", function: { name: "oc2api_", arguments: "" } },
+              { index: 1, id: "B", type: "function", function: { name: "oc2api_shell", arguments: '{"script":' } },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              { index: 0, function: { name: "read_2", arguments: '{"file_path":' } },
+              { index: 1, function: { arguments: '"echo OK"}' } },
+            ],
+          },
+        },
+      ],
+    },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '"README.md"}' } }] } }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+    { choices: [], usage },
+  ]
+  const options = {
+    ctx: {
+      toolAliases: new Map([
+        ["oc2api_read_2", "read"],
+        ["oc2api_shell", "shell"],
+      ]),
+      reservedToolNames: ["read"],
+      clientToolNames: ["oc2api_read_2", "oc2api_shell"],
+    },
+  }
+  const chunks = frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`)
+  const [full, stream] = await runBoth([...chunks, done], options)
+  assert.equal(full.statusCode, 200)
+  assert.equal(stream.statusCode, 200)
+  const calls = full.body.choices[0].message.tool_calls
+  assert.deepEqual(
+    calls.map((call) => call.function.name),
+    ["read", "shell"],
+  )
+  assert.deepEqual(
+    calls.map((call) => JSON.parse(call.function.arguments)),
+    [{ file_path: "README.md" }, { script: "echo OK" }],
+  )
+  assert.deepEqual(
+    calls.map((call) => call.id),
+    ["A", "B"],
+  )
+  assert.equal(full.body.choices[0].finish_reason, "tool_calls")
+  assert.deepEqual(full.body.usage, usage)
+  assert.ok(!stream.text.includes("oc2api_"))
+  assertStreamToolCallsMatch(full, stream)
+  assert.equal(stream.text.split("[DONE]").length - 1, 1)
+})
+
+test("现有客户端工具名可与别名前缀重叠，不错误还原或暴露半个名字", async () => {
+  const options = {
+    ctx: {
+      toolAliases: new Map([["oc2api_read_1", "read"]]),
+      clientToolNames: ["oc2api_read", "oc2api_read_1", "read_config"],
+      reservedToolNames: ["read"],
+    },
+  }
+  for (const [parts, expected] of [
+    [["oc2api_read"], "oc2api_read"],
+    [["oc2api_read", "_1"], "read"],
+    [["read", "_config"], "read_config"],
+  ]) {
+    const chunks = parts.map(
+      (name, index) =>
+        `data: ${JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    ...(index === 0 ? { id: "A", type: "function" } : {}),
+                    function: { name, arguments: "" },
+                  },
+                ],
+              },
+            },
+          ],
+        })}\n\n`,
+    )
+    chunks.push(
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}\n\n',
+      finish,
+      done,
+    )
+    const [full, stream] = await runBoth(chunks, options)
+    assert.equal(full.statusCode, 200)
+    assert.equal(full.body.choices[0].message.tool_calls[0].function.name, expected)
+    assertStreamToolCallsMatch(full, stream)
+  }
+})
+
+test("别名恢复支持 legacy function_call，且不会跨 choice 或请求串名字", async () => {
+  const aliases = new Map([["oc2api_read", "read"]])
+  const legacy = [
+    'data: {"choices":[{"index":0,"delta":{"function_call":{"name":"oc2api_","arguments":"{"}}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{"function_call":{"name":"read","arguments":"}"}}}]}\n\n',
+    finish,
+    done,
+  ]
+  const [full, stream] = await runBoth(legacy, { ctx: { toolAliases: aliases } })
+  assert.deepEqual(full.body.choices[0].message.function_call, { name: "read", arguments: "{}" })
+  assert.ok(!stream.text.includes("oc2api_"))
+  const frames = [
+    {
+      choices: [0, 1].map((index) => ({
+        index,
+        delta: { tool_calls: [{ index: 0, id: `call-${index}`, function: { name: "oc2api_", arguments: "" } }] },
+      })),
+    },
+    {
+      choices: [0, 1].map((index) => ({
+        index,
+        delta: { tool_calls: [{ index: 0, function: { name: "read", arguments: "{}" } }] },
+        finish_reason: "tool_calls",
+      })),
+    },
+  ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`)
+  for (const target of ["read", "another_read"]) {
+    const [result, streamed] = await runBoth([...frames, done], {
+      ctx: { toolAliases: new Map([["oc2api_read", target]]), choiceCount: 2 },
+    })
+    assert.equal(result.statusCode, 200)
+    assert.deepEqual(
+      result.body.choices.map((choice) => choice.message.tool_calls[0].function.name),
+      [target, target],
+    )
+    assertStreamToolCallsMatch(result, streamed)
+  }
+})
+
+test("保留工具调用和未完成别名必须报错，不能下发客户端可执行的原名或补 DONE", async () => {
+  const options = { ctx: { toolAliases: new Map([["oc2api_read", "read"]]), reservedToolNames: ["read"] } }
+  for (const name of ["read", "oc2api_"]) {
+    const chunks = [
+      `data: ${JSON.stringify({
+        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "A", function: { name, arguments: "{}" } }] } }],
+      })}\n\n`,
+      done,
+    ]
+    const [full, stream] = await runBoth(chunks, options)
+    assert.equal(full.statusCode, 429)
+    assert.ok(!stream.text.includes("[DONE]"))
+    if (name === "oc2api_") assert.match(full.body.error.message, /Incomplete upstream tool name/)
+    else {
+      assert.equal(stream.statusCode, 429)
+      assert.match(full.body.error.message, /reserved tool/)
+    }
+  }
+})
+
 function payloads(text) {
   return text
     .split("\n")

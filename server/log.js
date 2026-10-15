@@ -16,6 +16,8 @@ export function logZenRequest(requestId, format, model, stream, user, zenReq, me
     stream: !!stream,
     messageCount,
     bodyBytes: byteLength(zenReq.body),
+    toolNames: zenReq.toolNames,
+    toolAliases: zenReq.toolAliases ? Object.fromEntries(zenReq.toolAliases) : undefined,
     ocSession: shortId(zenReq.headers["x-opencode-session"]),
   })
 }

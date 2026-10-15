@@ -171,6 +171,98 @@ test("Vercel entry streaming preserves three parallel tool calls by stable index
   )
 })
 
+test("local streaming colliding read(file_path) tool round-trip", options, async () => {
+  const tool = {
+    type: "function",
+    function: {
+      name: "read",
+      description: "Read a UTF-8 file from the client's workspace.",
+      parameters: {
+        type: "object",
+        properties: { file_path: { type: "string" } },
+        required: ["file_path"],
+        additionalProperties: false,
+      },
+    },
+  }
+  const tools = [
+    tool,
+    {
+      type: "function",
+      function: {
+        name: "shell",
+        description: "Client shell runner",
+        parameters: { type: "object", properties: { script: { type: "string" } }, required: ["script"] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "edit",
+        description: "Edit a client file. This tool is not needed for the current request. ".repeat(630),
+        parameters: {
+          type: "object",
+          properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" } },
+          required: ["file_path", "old_string", "new_string"],
+        },
+      },
+    },
+    ...["write", "glob", "grep"].map((name) => ({
+      type: "function",
+      function: {
+        name,
+        description: `Client ${name} operation`,
+        parameters: { type: "object", properties: { file_path: { type: "string" } } },
+      },
+    })),
+  ]
+  const messages = [
+    {
+      role: "user",
+      content:
+        "Use the client read tool to read README.md, then reply exactly with the file content returned by the tool. Do not guess its content.",
+    },
+  ]
+  const first = await requestChat(localURL, {
+    stream: true,
+    messages,
+    tools,
+    tool_choice: { type: "function", function: { name: "read" } },
+    max_tokens: 1024,
+  })
+  const chunks = assertStreamingResponse(first.text, "colliding read step 1")
+  const calls = collectToolCalls(chunks)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].name, "read", "客户端不能收到上游别名或门禁工具")
+  assert.ok(calls[0].id)
+  assert.deepEqual(JSON.parse(calls[0].arguments), { file_path: "README.md" }, "不能把 file_path 改成门禁 path")
+  // 只回填模拟结果，不执行真实文件读取。
+  const second = await requestChat(localURL, {
+    stream: true,
+    tools,
+    tool_choice: "auto",
+    max_tokens: 1024,
+    messages: [
+      ...messages,
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: calls[0].id, type: "function", function: { name: calls[0].name, arguments: calls[0].arguments } },
+        ],
+      },
+      { role: "tool", tool_call_id: calls[0].id, content: "OC2API_COLLISION_OK" },
+    ],
+  })
+  const result = assertStreamingResponse(second.text, "colliding read step 2")
+  assert.equal(collectToolCalls(result).length, 0)
+  const content = result
+    .flatMap((chunk) => chunk.choices)
+    .map((choice) => choice.delta?.content || "")
+    .join("")
+  assert.match(content, /OC2API_COLLISION_OK/)
+})
+
 // auto 不保证每次调用工具，可有限重试；没有实际调用就失败，不能 skip 冒充验收。
 async function invokeToolWithRetry(baseURL, cities = ["Tokyo"]) {
   for (let attempt = 1; attempt <= 3; attempt++) {
