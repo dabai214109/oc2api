@@ -1,6 +1,6 @@
 # oc2api
 
-> ✅ **2026-10-15 提醒**：`deepseek-v4.1-flash-free` 当前可用（免费，上下文 200,000 / 输出 32,000 tokens，支持图片输入）。其他常用的免费模型还有 `big-pickle` 和 `mimo-v2.6-flash-free`，其中 `mimo-v2.6-flash-free` 同样支持图片输入。
+> 📌 **OpenCode 最新上线了两个免费模型**：`deepseek-v4.1-flash-free` 和 `glm-5.3-flash-free`，均为 200,000 上下文、支持图片输入。完整对比见 [免费模型](#免费模型)。
 
 OpenCode Free API 代理，使用一套 Express 业务逻辑，同时支持本地运行、Docker 和 Vercel 部署，并支持 SSE 流式响应。
 
@@ -99,28 +99,25 @@ Authorization: Bearer <api-key>
 
 客户端工具、工具选择、历史工具调用和多轮工具结果回填均可正常使用，工具名与参数原样往返。
 
-## 免费模型限制
+## 免费模型
 
-代理仅放行免费模型（`big-pickle` 及所有以 `-free` 结尾的模型），以 `big-pickle` 为例：
+代理仅放行免费模型（`big-pickle` 及所有以 `-free` 结尾的模型）。以下是常用且已验证可用的几个：
 
-```json
-{
-  "id": "big-pickle",
-  "limit": {
-    "context": 200000,
-    "output": 32000
-  }
-}
-```
+| 模型                       | 上下文  | 输出   | 图片输入 |
+| -------------------------- | ------- | ------ | -------- |
+| `big-pickle`               | 200,000 | 32,000 | ❌       |
+| `mimo-v2.6-flash-free`     | 200,000 | 32,000 | ✅       |
+| `deepseek-v4.1-flash-free` | 200,000 | 32,000 | ✅       |
+| `glm-5.3-flash-free`       | 200,000 | 32,000 | ✅       |
 
-- `context`：最大上下文窗口，**200,000** tokens
-- `output`：最大单次输出长度，**32,000** tokens
+- `context`：最大上下文窗口，单位 tokens
+- `output`：最大单次输出长度，单位 tokens
 
-以上限制数据来源于 [https://models.opencode.ai/api.json](https://models.opencode.ai/api.json)（`opencode` key 下对应模型的 `limit` 字段），可自行查看核实，以实际使用为准。
+以上数据来源于 [https://models.opencode.ai/api.json](https://models.opencode.ai/api.json)（`opencode` key 下对应模型的 `limit` 与 `modalities` 字段），可自行查看核实，以实际使用为准。
 
 ## 错误处理
 
-上游返回 HTTP 错误或流解析失败时，在下游响应头尚未发送前归一为 `429`，便于账号池切换；流式头已发送后返回 SSE 错误事件且不补 `[DONE]`。建连网络失败、建连超时及模型列表错误使用 `502` / `504`。
+上游返回 HTTP 错误时透出可判断的真实语义，不再一律归一成 `429`：只有上游真的限流才是 `429`（`rate_limit_error`），参数错误为 `400`（`invalid_request_error`），鉴权失败为 `401`/`403`（`authentication_error`），服务端问题为 `5xx`（`upstream_error`）。这样客户端能区分「额度用尽」和「请求写错了」，也便于把问题反馈给上游。流式响应头尚未发送前错误以普通 JSON 返回；头已发送后返回 SSE 错误事件且不补 `[DONE]`。oc2api 自身的流异常（缺少完成信号、上游误选保留工具）使用 `502`（`upstream_stream_error`）；建连网络失败、建连超时及模型列表错误使用 `502` / `504`。
 
 上游误选代理内部保留工具时按错误结束，不会把它当成客户端同名工具交回客户端执行。
 

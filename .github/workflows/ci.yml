@@ -41,8 +41,12 @@ jobs:
       - name: Run offline tests
         run: npm test
 
+  # 真实联调只在手动触发和合入 main 后跑，不作为 PR 的门禁：
+  # 它依赖真实模型与免费层配额，模型偶尔不服从指令、上游瞬时限流或断流都会
+  # 让结果不稳定。PR 用离线测试保证质量，live 作为 main 上的健康检查。
   live-test:
     needs: static-checks
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -61,5 +65,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run live big-pickle tests
+      - name: Run live upstream tests
         run: npm run test:live
